@@ -1,0 +1,16 @@
+.Rproj.user
+.Rhistory
+*.stan
+*.txt
+*.Rdata
+*.RData
+*.csv
+*.CSV
+*.XLS
+*.xlsx
+*.spss
+*.sav
+*.XLSX
+*.xls
+*.zip
+*.Rproj
