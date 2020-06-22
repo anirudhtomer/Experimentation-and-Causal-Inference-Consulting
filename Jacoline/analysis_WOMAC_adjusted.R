@@ -10,8 +10,13 @@ if(!require(ggplot2)){
 }
 library(splines)
 
+if(!require(JointAI)){
+  install.packages("JointAI")
+}
+library(JointAI)
+
 #Now we load the data. A pop will appear. You must load data in SPSS .sav file format only
-patient_data = read.spss(file = file.choose(), to.data.frame = T)
+patient_data = read.spss(file = "Datasetlongformat_WOMAC.sav", to.data.frame = T)
 
 #Data summary
 summary(patient_data)
@@ -21,37 +26,25 @@ patient_data$Treatment = droplevels(patient_data$Treatment)
 #make usual care as the reference category, so that results are printed for duloxetine
 patient_data = within(patient_data, Treatment <- relevel(Treatment, ref = "usual care"))
 
-#Remove all missing WOMAC_pain, missing BMI, missing HADS_depression, missing HADS_anxiety
-patient_data = patient_data[!is.na(patient_data$WOMAC_pain) & !is.na(patient_data$BMI) &
-                              !is.na(patient_data$HADS_depression) & !is.na(patient_data$HADS_anxiety),]
+patient_data = patient_data[complete.cases(patient_data[, c("sex", "joint", "age", "BMI", "Com_min2", "Treatment",
+                                                            "HADS_anxiety", "Score_Paindetect", "HADS_depression")]),]
 
 #we make a spline for time effect with knot at median follow up of 26 weeks
 print(median(patient_data$Time))
 
-#The unadjusted model. you can replace ns(Time, knots=26) with just Time to remove splines
-unadjusted_model = lme(data=patient_data,
-                       fixed = WOMAC_pain~Treatment* ns(Time, knots = 26, Boundary.knots = c(0,52)), 
-                       random = list(~1|Cluster, ~1 + ns(Time, knots = 26, Boundary.knots = c(0,52)) | Patientnr), 
-                       na.action = na.omit,
-                       control = lmeControl(maxIter = 1500, opt="optim", optimMethod = "L-BFGS-B"))
-
-#Print results
-#1. average effect size for each covariate in the model
-print(unadjusted_model)
-#95% confidence interval for fixed effectss
-intervals(unadjusted_model, which = "fixed")
-#p-values
-anova(unadjusted_model)
-#Complete summary
-summary(unadjusted_model)
+#full_model_imputation = lme_imp(data = patient_data,
+#                                fixed = WOMAC_pain~(BMI + age + sex + joint + Treatment + Com_min2 + Score_Paindetect+
+#                                                     HADS_depression + HADS_anxiety) * ns(Time, knots = 26, Boundary.knots = c(0,52)),
+#                                random = ~1 + ns(Time, knots = 26, Boundary.knots = c(0,52)) | Patientnr,
+#                                n.iter=1000)
 
 #The full model now
 full_model = lme(data=patient_data,
-                 fixed = WOMAC_pain~(BMI + age + sex + joint + Treatment + 
-                                       HADS_depression + HADS_anxiety) * ns(Time, knots = 26, Boundary.knots = c(0,52)), 
+                 fixed = WOMAC_pain~(Treatment + BMI + age + sex + joint +  Com_min2 + Score_Paindetect + HADS_depression + HADS_anxiety)*ns(Time, knots = 26, Boundary.knots = c(0,52)), 
                  random = list(~1|Cluster, ~1 + ns(Time, knots = 26, Boundary.knots = c(0,52)) | Patientnr), 
                  na.action = na.omit,
-                 control = lmeControl(maxIter = 1500, opt="optim", optimMethod = "L-BFGS-B"))
+                 control = lmeControl(maxIter = 3000, msMaxIter=200, opt="optim", optimMethod = "L-BFGS-B", niterEM = 1000))
+
 
 #Print results
 #1. average effect size for each covariate in the model
@@ -90,10 +83,10 @@ fixed_effects = fixef(full_model)
 for(test_time in test_times){
   contrast = rep(0, length(fixed_effects))
   names(contrast) = names(fixed_effects)
-  #number 6 is fixed effect of treatment
-  contrast[6] = 1
-  #number 19 and 20 are treatment time interactions
-  contrast[c(19,20)] = ns(test_time, knots=26, Boundary.knots = c(0,52))
+  #number 2 is fixed effect of treatment
+  contrast[2] = 1
+  #number 13 and 14 are treatment time interactions
+  contrast[c(13,14)] = ns(test_time, knots=26, Boundary.knots = c(0,52))
   meanEff = contrast %*% fixed_effects
   stdErr = sqrt(c(t(contrast) %*% vcov(full_model) %*% contrast))
   
@@ -118,15 +111,18 @@ temp_patient$BMI = median(temp_patient$BMI)
 temp_patient$sex = factor("male", levels = c("female", "male"))
 temp_patient$joint = factor("heup", levels = c("heup", "knie"))
 temp_patient$Treatment = factor("duloxetine", levels = c("usual care", "duloxetine"))
+temp_patient$Com_min2 = factor("ja", levels = c("ja", "nee"))
+temp_patient$Score_Paindetect = median(temp_patient$Score_Paindetect)
 #confirm patient data before proceeding
 View(temp_patient)
 
 for(test_time in test_times){
   temp_patient$Time = test_time
-  contrast = c(model.matrix(~(BMI + age + sex + joint + Treatment + 
+  contrast = c(model.matrix(~(Treatment + BMI + age + sex + joint + Com_min2 + Score_Paindetect+
                                 HADS_depression + HADS_anxiety) * ns(Time, knots = 26, Boundary.knots = c(0,52)), 
                             temp_patient))
-  contrast[1:8]=0
+  #set all fixed effects to 0,  except for effect of time and all the interactions with time
+  contrast[1:10]=0
   meanEff = contrast %*% fixed_effects
   stdErr = sqrt(c(t(contrast) %*% vcov(full_model) %*% contrast))
   
@@ -164,6 +160,8 @@ pred_patient_data = data.frame(expand.grid(Time=seq(0,52,length.out = 10),
                                            Treatment=levels(patient_data$Treatment),
                                            sex=levels(patient_data$sex),
                                            joint=levels(patient_data$joint),
+                                           Com_min2 = "ja",
+                                           Score_Paindetect = median(patient_data$Score_Paindetect),
                                            HADS_depression=median(patient_data$HADS_depression),
                                            HADS_anxiety=median(patient_data$HADS_anxiety),
                                            age=median(patient_data$age),
@@ -181,4 +179,4 @@ ggplot(data=plotData) + geom_line(aes(x=Time, y=pred,
   geom_ribbon(aes(ymin=low, ymax=upp, x=Time, fill = Treatment), alpha = 0.3)+
   facet_grid(joint~sex)+
   theme_bw() + 
-  xlab("Time (weeks)") + ylab("WOMAC Pain")
+  xlab("Time (weeks)") + ylab("WOMAC Pain (Com_min2 = 'ja')")
